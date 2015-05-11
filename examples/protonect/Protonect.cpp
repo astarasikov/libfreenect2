@@ -24,7 +24,6 @@
  * either License.
  */
 
-
 #include <iostream>
 #include <signal.h>
 
@@ -34,40 +33,80 @@
 #include <libfreenect2/frame_listener_impl.h>
 #include <libfreenect2/threading.h>
 
-bool protonect_shutdown = false;
+#include "protonect_view.h"
 
-void sigint_handler(int s)
-{
-  protonect_shutdown = true;
+static libfreenect2::SyncMultiFrameListener *p_Listener = NULL;
+static libfreenect2::FrameMap frames;
+
+extern "C" {
+
+void pn_event(void) {
+  printf("%s\n", __func__);
+
+  if (!p_Listener) {
+    puts("skip");
+    return;
+  }
+
+  p_Listener->waitForNewFrame(frames);
+  libfreenect2::Frame *rgb = frames[libfreenect2::Frame::Color];
+  libfreenect2::Frame *ir = frames[libfreenect2::Frame::Ir];
+  libfreenect2::Frame *depth = frames[libfreenect2::Frame::Depth];
+
+  printf("rgb=<%d %d> ir=<%d %d> depth=<%d %d>\n", rgb->width, rgb->height,
+         ir->width, ir->height, depth->width, depth->height);
+
+  struct protonect_texdata data = {
+	  .data = {
+		  [PROTONECT_TEX_RGB] = {
+			  .data = rgb->data,
+			  .width = rgb->width,
+			  .height = rgb->height,
+		  },
+		  [PROTONECT_TEX_DEPTH] = {
+			  .data = depth->data,
+			  .width = depth->width,
+			  .height = depth->height,
+			  .is_float = true,
+		  },
+		  [PROTONECT_TEX_IR] = {
+			  .data = ir->data,
+			  .width = ir->width,
+			  .height = ir->height,
+			  .is_float = true,
+		  },
+	  },
+  };
+
+  UpdateGLTexture(&data);
+
+  p_Listener->release(frames);
+}
 }
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   std::string program_path(argv[0]);
   size_t executable_name_idx = program_path.rfind("Protonect");
 
   std::string binpath = "/";
 
-  if(executable_name_idx != std::string::npos)
-  {
+  if (executable_name_idx != std::string::npos) {
     binpath = program_path.substr(0, executable_name_idx);
   }
-
 
   libfreenect2::Freenect2 freenect2;
   libfreenect2::Freenect2Device *dev = freenect2.openDefaultDevice();
 
-  if(dev == 0)
-  {
-    std::cout << "no device connected or failure opening the default one!" << std::endl;
+  if (dev == 0) {
+    std::cout << "no device connected or failure opening the default one!"
+              << std::endl;
     return -1;
   }
 
-  signal(SIGINT,sigint_handler);
-  protonect_shutdown = false;
-
-  libfreenect2::SyncMultiFrameListener listener(libfreenect2::Frame::Color | libfreenect2::Frame::Ir | libfreenect2::Frame::Depth);
-  libfreenect2::FrameMap frames;
+  libfreenect2::SyncMultiFrameListener listener(libfreenect2::Frame::Color |
+                                                libfreenect2::Frame::Ir |
+                                                libfreenect2::Frame::Depth);
+  p_Listener = &listener;
 
   dev->setColorFrameListener(&listener);
   dev->setIrAndDepthFrameListener(&listener);
@@ -76,26 +115,11 @@ int main(int argc, char *argv[])
   std::cout << "device serial: " << dev->getSerialNumber() << std::endl;
   std::cout << "device firmware: " << dev->getFirmwareVersion() << std::endl;
 
-  while(!protonect_shutdown)
-  {
-    listener.waitForNewFrame(frames);
-    libfreenect2::Frame *rgb = frames[libfreenect2::Frame::Color];
-    libfreenect2::Frame *ir = frames[libfreenect2::Frame::Ir];
-    libfreenect2::Frame *depth = frames[libfreenect2::Frame::Depth];
-
-    cv::imshow("rgb", cv::Mat(rgb->height, rgb->width, CV_8UC3, rgb->data));
-    cv::imshow("ir", cv::Mat(ir->height, ir->width, CV_32FC1, ir->data) / 20000.0f);
-    cv::imshow("depth", cv::Mat(depth->height, depth->width, CV_32FC1, depth->data) / 4500.0f);
-
-    int key = cv::waitKey(1);
-    protonect_shutdown = protonect_shutdown || (key > 0 && ((key & 0xFF) == 27)); // shutdown on escape
-
-    listener.release(frames);
-    //libfreenect2::this_thread::sleep_for(libfreenect2::chrono::milliseconds(100));
-  }
+  InitGL();
 
   // TODO: restarting ir stream doesn't work!
-  // TODO: bad things will happen, if frame listeners are freed before dev->stop() :(
+  // TODO: bad things will happen, if frame listeners are freed before
+  // dev->stop() :(
   dev->stop();
   dev->close();
 
